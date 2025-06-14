@@ -1,15 +1,12 @@
 "use strict";
 
-const fastify = require("fastify")({
-    logger: true,
-});
-
-fastify.register(require("fastify-cors"), {
-    origin: "*",
-});
-
+// version 1.4
+const { format } = require("date-fns");
+const fastify = require("fastify");
+const pino = require("pino");
 const tls = require("tls");
 const fs = require("fs");
+const path = require("path");
 const Buffer = require("buffer").Buffer;
 
 const TLS_PORT = 23779;
@@ -24,6 +21,92 @@ const options = {
     key: fs.readFileSync("certs/key.pem"),
     cert: fs.readFileSync("certs/cert.pem"),
 };
+
+// Function to create a new logger destination
+function createLoggerDestination() {
+    const currentDate = format(new Date(), "yyyy-MM-dd");
+    const logFileName = `/home/cync/Logs/cync/cync_${currentDate}.log`;
+    return pino.destination(logFileName);
+}
+
+// Function to remove logs older than 5 days
+function removeOldLogs() {
+    const logDir = "/home/cync/Logs/cync"; // Path to the log directory
+    const now = Date.now();
+    const fiveDaysInMs = 5 * 24 * 60 * 60 * 1000;
+
+    fs.readdir(logDir, (err, files) => {
+        if (err) {
+            fastifyInstance.log.error(
+                `Failed to read log directory: ${err.message}`
+            );
+            return;
+        }
+
+        files.forEach((file) => {
+            const filePath = path.join(logDir, file);
+            fs.stat(filePath, (err, stats) => {
+                if (err) {
+                    fastifyInstance.log.error(
+                        `Failed to get stats for file: ${filePath}`
+                    );
+                    return;
+                }
+
+                // Check if the file is older than 5 days
+                if (now - stats.mtimeMs > fiveDaysInMs) {
+                    fs.unlink(filePath, (err) => {
+                        if (err) {
+                            fastifyInstance.log.error(
+                                `Failed to delete file: ${filePath}`
+                            );
+                        } else {
+                            fastifyInstance.log.info(
+                                `Deleted old log file: ${filePath}`
+                            );
+                        }
+                    });
+                }
+            });
+        });
+    });
+}
+// Run the cleanup function immediately
+removeOldLogs();
+
+// Schedule the cleanup function to run daily
+setInterval(removeOldLogs, 24 * 60 * 60 * 1000); // Run every 24 hours
+
+// Initialize logger destination
+let loggerDestination = createLoggerDestination();
+
+// Use the logger in Fastify
+const fastifyInstance = fastify({
+    logger: {
+        level: "info",
+        stream: loggerDestination,
+    },
+});
+
+// Update logger destination daily
+setInterval(() => {
+    const newDestination = createLoggerDestination();
+    loggerDestination = newDestination; // Update the logger destination
+
+    // Update the Fastify logger to use the new destination
+    fastifyInstance.log = pino(
+        {
+            level: "info",
+        },
+        loggerDestination
+    );
+
+    fastifyInstance.log.info("Log file rotated for the new day.");
+}, 24 * 60 * 60 * 1000); // Check every 24 hours
+
+fastifyInstance.register(require("fastify-cors"), {
+    origin: "*",
+});
 
 // Some commands require a response that iterates a specific byte
 // It appears it can be shared across all devices, but it should still
@@ -46,8 +129,8 @@ const CLIENT_CONNECTION_REQUEST = Buffer.from([
     0xc3, 0x00, 0x00, 0x00, 0x01, 0x0c,
 ]);
 const SERVER_CONNECTION_RESPONSE = Buffer.from([
-    0xc8, 0x00, 0x00, 0x00, 0x0b, 0x0d, 0x07, 0xe6, 0x02, 0x13, 0x07, 0x0a,
-    0x14, 0x29, 0xfd, 0xa8,
+    0xc8, 0x00, 0x00, 0x00, 0x0b, 0x0d, 0x07, 0xe7, 0x05, 0x16, 0x02, 0x14,
+    0x2a, 0x3a, 0xfe, 0x0c,
 ]);
 
 // The client will sometimes send diagnostic data - acknowledge it
@@ -60,103 +143,109 @@ const SERVER_CLIENT_DATA_ACK = Buffer.from([
 const CLIENT_HEARTBEAT = Buffer.from([0xd3, 0x00, 0x00, 0x00, 0x00]);
 const SERVER_HEARTBEAT = Buffer.from([0xd8, 0x00, 0x00, 0x00, 0x00]);
 
-const CMD_TURN_ON = Buffer.from([
-    0x73, 0x00, 0x00, 0x00, 0x1f, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x7e, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xd0, 0x0d, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
-]);
-const CMD_TURN_OFF = Buffer.from([
-    0x73, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x7e, 0x00, 0x00, 0x00, 0x00, 0xf8, 0xd0, 0x0d, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-]);
-const CMD_SET_BRIGHTNESS = (brightness) =>
-    Buffer.from([
+const CMD_TURN_ON = (id) => {
+    //fastifyInstance.log.info(`ID: ${id}`);
+    const value = 134 - 63 + id;
+    //fastifyInstance.log.info(`Value: ${value}`);
+
+    return Buffer.from([
         0x73,
         0x00,
         0x00,
         0x00,
-        0x1d,
-        0x02,
-        brightness,
+        0x1f,
+        0x00,
+        0x00,
         0x00,
         0x00,
         0x00,
         0x00,
         0x00,
         0x7e,
-        0x00,
+        0x86,
         0x00,
         0x00,
         0x00,
         0xf8,
-        0xd2,
-        0x0b,
+        0xd0,
+        0x0d,
+        0x00,
+        0x86,
         0x00,
         0x00,
+        0x00,
+        0x00,
+        id,
+        0x00,
+        0xd0,
+        0x11,
+        0x02,
         0x01,
         0x00,
         0x00,
-        0x00,
-        0x00,
-        0x00,
-        0xd2,
-        0x00,
-        0x00,
-        brightness,
-        0x00,
-        0x00,
-    ]);
-const CMD_SET_COLOR_TEMPERATURE = (W) =>
-    Buffer.from([
-        0x73,
-        0x00,
-        0x00,
-        0x00,
-        0x1e,
-        0x03,
-        W,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
+        value,
         0x7e,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0xf8,
-        0xe2,
-        0x0c,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0xe2,
-        0x00,
-        0x00,
-        0x05,
-        W,
-        0x00,
-        0x00,
     ]);
+};
 
-const CMD_SET_COLOR = (R, G, B) =>
-    Buffer.from([
+const CMD_TURN_OFF = (id) => {
+    //fastifyInstance.log.info(`ID: ${id}`);
+    const value = 134 - 64 + id;
+    //fastifyInstance.log.info(`Value: ${value}`);
+
+    return Buffer.from([
         0x73,
         0x00,
         0x00,
         0x00,
-        0x20,
-        0x04,
-        R,
-        G,
-        B,
+        0x1f,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x7e,
+        0x86,
+        0x00,
+        0x00,
+        0x00,
+        0xf8,
+        0xd0,
+        0x0d,
+        0x00,
+        0x86,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        id,
+        0x00,
+        0xd0,
+        0x11,
+        0x02,
+        0x00,
+        0x00,
+        0x00,
+        value,
+        0x7e,
+    ]);
+};
+
+const CMD_SET_BRIGHTNESS = (brightness, id) => {
+    const value = 0 + brightness + id;
+    return Buffer.from([
+        0x73,
+        0x00,
+        0x00,
+        0x00,
+        0x22,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
         0x00,
         0x00,
         0x7e,
@@ -165,48 +254,168 @@ const CMD_SET_COLOR = (R, G, B) =>
         0x00,
         0x00,
         0xf8,
-        0xe2,
-        0x0e,
+        0xf0,
+        0x10,
         0x00,
         0x00,
         0x00,
         0x00,
         0x00,
         0x00,
+        id,
         0x00,
-        0x00,
-        0xe2,
-        0x00,
-        0x00,
-        0x04,
-        R,
-        G,
-        B,
-        0x00,
-        0x00,
+        0xf0,
+        0x11,
+        0x2,
+        0x1,
+        brightness,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        value,
+        0x7e,
     ]);
+};
+
+const CMD_GET_INFO = Buffer.from([
+    0x73, 0x00, 0x00, 0x00, 0x18, 0x4b, 0x05, 0xba, 0xbd, 0x85, 0xd3, 0x00,
+    0x7e, 0x0b, 0x00, 0x00, 0x00, 0xf8, 0x52, 0x06, 0x00, 0x00, 0x00, 0xff,
+    0xff, 0x00, 0x00, 0x56, 0x7e,
+]);
+
+const CMD_SET_COLOR = (red, green, blue, id) => {
+    let value = red + green + blue + id;
+    while (value > 255) {
+        value -= 255;
+    }
+    fastifyInstance.log.info(`Value: ${value}`);
+    return Buffer.from([
+        0x73,
+        0x00,
+        0x00,
+        0x00,
+        0x22,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x7e,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0xf8,
+        0xf0,
+        0x10,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        id,
+        0x00,
+        0xf0,
+        0x11,
+        0x2,
+        0x1,
+        0xff,
+        0xfe,
+        red,
+        green,
+        blue,
+        value,
+        0x7e,
+    ]);
+};
+
+const CMD_SET_TEMPERATURE = (temperature, id) => {
+    let value = 3 + temperature + id;
+    while (value > 255) {
+        value -= 255;
+    }
+    fastifyInstance.log.info(`Value: ${value}`);
+    return Buffer.from([
+        0x73,
+        0x00,
+        0x00,
+        0x00,
+        0x22,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x7e,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0xf8,
+        0xf0,
+        0x10,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        id,
+        0x00,
+        0xf0,
+        0x11,
+        0x2,
+        0x1,
+        0xff,
+        temperature,
+        0x00,
+        0x00,
+        0x00,
+        value,
+        0x7e,
+    ]);
+};
+
+const CMD_CUSTOM = (custom) => {
+    return Buffer.from([custom]);
+};
 
 // Some commands have a "return" code that we can use to make sure
 // the state of devices stays in sync
-const CLIENT_STATUS_ON = Buffer.from([0x7b, 0x00, 0x00, 0x00, 0x07, 0x01]);
-const CLIENT_STATUS_OFF = Buffer.from([0x7b, 0x00, 0x00, 0x00, 0x07, 0x00]);
+const UPDATE_CLIENT_STATE = Buffer.from([0x83, 0x00, 0x00, 0x00, 0x25]);
 
-const CLIENT_STATUS_BRIGHTNESS = Buffer.from([
-    0x7b, 0x00, 0x00, 0x00, 0x07, 0x02,
+const INITIAL_CLIENT_STATE_PREFIX = Buffer.from([0x73, 0x00, 0x00, 0x00]);
+
+function isInitialClientState(data) {
+    if (!data.slice(0, 4).equals(INITIAL_CLIENT_STATE_PREFIX)) {
+        return false;
+    }
+
+    const fifthValue = data.readUInt8(4);
+
+    if (fifthValue !== 13) {
+        return true;
+    }
+
+    return false;
+}
+
+const INVALID_COMMAND = Buffer.from([
+    0x7b, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
-
-const CLIENT_STATUS_TEMPERATURE = Buffer.from([
-    0x7b, 0x00, 0x00, 0x00, 0x07, 0x03,
-]);
-
-const INITIAL_CLIENT_STATE = Buffer.from([0x43, 0x00, 0x00, 0x00]);
 
 let devices = {};
 
 const server = tls.createServer(options);
 
 server.on("error", function (error) {
-    fastify.log.error(error);
+    fastifyInstance.log.error(error);
     server.destroy();
 });
 
@@ -229,226 +438,159 @@ const sendTCPData = (sock, data) =>
     });
 
 server.on("secureConnection", (socket) => {
-    fastify.log.info(
+    fastifyInstance.log.info(
         `New connection: ${socket.remoteAddress}:${socket.remotePort}`
     );
     devices[socket.remoteAddress] = {
         socket: socket,
+        name: {},
         state: {},
     };
+    setTimeout(() => {
+        sendTCPData(socket, CMD_GET_INFO);
+        fastifyInstance.log.info(
+            `Server Requesting Info: ${CMD_GET_INFO.toString("hex")}`
+        );
+    }, 10000); // 10 seconds delay
 
     // All the back & forth init communication is handled here
     socket.on("data", async (data) => {
-        DEBUG &&
-            fastify.log.info(
-                `${socket.remoteAddress}:${
-                    socket.remotePort
-                } sent: ${data.toString("hex")}`
-            );
+        fastifyInstance.log.info(
+            `${socket.remoteAddress}:${socket.remotePort} sent: ${data
+                .toString("hex")
+                .match(/.{2}/g)
+                .join(",")}`
+        );
 
         if (data.subarray(0, 1).equals(CLIENT_INFO_BUFFER)) {
             await sendTCPData(socket, SERVER_CLIENT_ACK);
-            DEBUG &&
-                fastify.log.info(
-                    `Server sent: ${SERVER_CLIENT_ACK.toString("hex")}`
-                );
+            const idSubstring = data.subarray(12, 28);
+            const extractedId = Buffer.from(idSubstring).toString("ascii");
+
+            devices[socket.remoteAddress].name = { name: extractedId };
+
+            fastifyInstance.log.info(`Received ID: ${extractedId}`);
+            fastifyInstance.log.info(
+                `Server sent: ${SERVER_CLIENT_ACK.toString("ascii")}`
+            );
         }
         if (data.equals(CLIENT_CONNECTION_REQUEST)) {
             await sendTCPData(socket, SERVER_CONNECTION_RESPONSE);
-            DEBUG &&
-                fastify.log.info(
-                    `Server sent: ${SERVER_CONNECTION_RESPONSE.toString("hex")}`
-                );
+            fastifyInstance.log.info(
+                `Server sent: ${SERVER_CONNECTION_RESPONSE.toString("ascii")}`
+            );
         }
         if (data.subarray(0, 4).equals(CLIENT_DATA)) {
             await sendTCPData(socket, SERVER_CLIENT_DATA_ACK);
-            DEBUG &&
-                fastify.log.info(
-                    `Server sent: ${SERVER_CLIENT_DATA_ACK.toString("hex")}`
-                );
+            fastifyInstance.log.info(
+                `Server sent: ${SERVER_CLIENT_DATA_ACK.toString("ascii")}`
+            );
         }
         if (data.equals(CLIENT_HEARTBEAT)) {
             await sendTCPData(socket, SERVER_HEARTBEAT);
-            DEBUG &&
-                fastify.log.info(
-                    `Server sent: ${SERVER_HEARTBEAT.toString("hex")}`
-                );
+            fastifyInstance.log.info(
+                `Server sent: ${SERVER_HEARTBEAT.toString("hex")}`
+            );
         }
         if (data.subarray(0, 1).equals(CLIENT_ITER_REQUEST)) {
             const buf = SERVER_ITER_RESPONSE();
             await sendTCPData(socket, buf);
-            DEBUG && fastify.log.info(`Server sent: ${buf.toString("hex")}`);
+            fastifyInstance.log.info(`Server sent: ${buf.toString("ascii")}`);
         }
-        if (data.subarray(0, 6).equals(CLIENT_STATUS_ON)) {
-            DEBUG &&
-                fastify.log.info(
-                    `${socket.remoteAddress}:${socket.remotePort} is now ON`
-                );
-            devices[socket.remoteAddress].state.status = true;
-        }
-        if (data.subarray(0, 6).equals(CLIENT_STATUS_OFF)) {
-            DEBUG &&
-                fastify.log.info(
-                    `${socket.remoteAddress}:${socket.remotePort} is now OFF`
-                );
-            devices[socket.remoteAddress].state.status = false;
-        }
-        if (data.includes(CLIENT_STATUS_BRIGHTNESS)) {
-            const idx = data.indexOf(CLIENT_STATUS_TEMPERATURE);
-            DEBUG &&
-                fastify.log.info(
-                    `${socket.remoteAddress}:${
-                        socket.remotePort
-                    } has a brightness of ${Number(data[idx + 7])}`
-                );
-            devices[socket.remoteAddress].state.brightness = Number(
-                data[idx + 7]
+
+        if (data.subarray(0, 5).equals(UPDATE_CLIENT_STATE)) {
+            const id = data[24];
+            const state = Boolean(data[32]);
+            const brightness = data[33];
+            const temperature = data[34];
+            const red = data[35];
+            const green = data[36];
+            const blue = data[37];
+
+            fastifyInstance.log.info(
+                `${socket.remoteAddress}:${socket.remotePort} Updating Info`
             );
-        }
-        if (data.includes(CLIENT_STATUS_TEMPERATURE)) {
-            const idx = data.indexOf(CLIENT_STATUS_TEMPERATURE);
-            DEBUG &&
-                fastify.log.info(
-                    `${socket.remoteAddress}:${
-                        socket.remotePort
-                    } has a temperature of ${Number(data[idx + 6])}`
-                );
-            devices[socket.remoteAddress].state.temperature = Number(
-                data[idx + 6]
+            fastifyInstance.log.info(
+                `${socket.remoteAddress}:${
+                    socket.remotePort
+                } ID: ${id}, State: ${
+                    state ? "on" : "off"
+                }, Brightness: ${brightness},  Temperature: ${temperature}, Color: (${red}, ${green}, ${blue})`
             );
+            devices[socket.remoteAddress].state = {
+                type: "light",
+                id,
+                status: state,
+                brightness,
+                temperature,
+                color: {
+                    r: red,
+                    g: green,
+                    b: blue,
+                },
+            };
         }
-        if (data.subarray(0, 4).equals(INITIAL_CLIENT_STATE) && (data[5] !== 0x1e)) {
-            const rawState = data.subarray(15, 22);
-            switch (rawState.subarray(0, 1).toString("hex")) {
-                case "01": {
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${socket.remotePort} is a smart plug`
-                        );
-                    const state = Boolean(
-                        parseInt(rawState.subarray(1, 2).toString("hex"), 16)
-                    );
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${
-                                socket.remotePort
-                            } is currently ${state ? "on" : "off"}!`
-                        );
-                    devices[socket.remoteAddress].state = {
-                        type: "plug",
-                        status: state,
-                    };
-                    break;
-                }
 
-                case "02": {
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${socket.remotePort} is a smart light`
-                        );
-                    const state = Boolean(
-                        parseInt(rawState.subarray(1, 2).toString("hex"), 16)
-                    );
-                    const brightness = parseInt(
-                        rawState.subarray(2, 3).toString("hex"),
-                        16
-                    );
-                    const temperature = parseInt(
-                        rawState.subarray(3, 4).toString("hex"),
-                        16
-                    );
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${
-                                socket.remotePort
-                            } is currently ${
-                                state ? "on" : "off"
-                            } and has a brightness of ${brightness} and color temp of ${temperature}`
-                        );
-                    devices[socket.remoteAddress].state = {
-                        type: "light",
-                        status: state,
-                        brightness,
-                        temperature,
-                    };
-                    break;
-                }
+        if (isInitialClientState(data)) {
+            const id = data[27];
+            const state = Boolean(data[35]);
+            const brightness = data[39];
+            const temperature = data[43];
+            const red = data[47];
+            const green = data[48];
+            const blue = data[49];
 
-                case "04": {
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${socket.remotePort} is a light strip!`
-                        );
-                    const state = Boolean(
-                        parseInt(rawState.subarray(1, 2).toString("hex"), 16)
-                    );
-                    const brightness = parseInt(
-                        rawState.subarray(2, 3).toString("hex"),
-                        16
-                    );
-                    const r = parseInt(
-                        rawState.subarray(4, 5).toString("hex"),
-                        16
-                    );
-                    const g = parseInt(
-                        rawState.subarray(5, 6).toString("hex"),
-                        16
-                    );
-                    const b = parseInt(
-                        rawState.subarray(6, 7).toString("hex"),
-                        16
-                    );
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${
-                                socket.remotePort
-                            } is currently ${
-                                state ? "on" : "off"
-                            } and has a brightness of ${brightness} and color of (${r},${g},${b})`
-                        );
-                    devices[socket.remoteAddress].state = {
-                        type: "lightstrip",
-                        status: state,
-                        brightness,
-                        color: {
-                            r,
-                            g,
-                            b,
-                        },
-                    };
-                    break;
-                }
-
-                default:
-                    DEBUG &&
-                        fastify.log.info(
-                            `${socket.remoteAddress}:${socket.remotePort} is an unknown device...`
-                        );
-                    break;
-            }
+            fastifyInstance.log.info(
+                `${socket.remoteAddress}:${socket.remotePort} is a smart light`
+            );
+            fastifyInstance.log.info(
+                `${socket.remoteAddress}:${
+                    socket.remotePort
+                } ID: ${id}, State: ${
+                    state ? "on" : "off"
+                }, Brightness: ${brightness},  Temperature: ${temperature}, Color: (${red}, ${green}, ${blue})`
+            );
+            devices[socket.remoteAddress].state = {
+                type: "light",
+                id,
+                status: state,
+                brightness,
+                temperature,
+                color: {
+                    r: red,
+                    g: green,
+                    b: blue,
+                },
+            };
+        }
+        if (data.equals(INVALID_COMMAND)) {
+            fastifyInstance.log.info(`Client did not accept the last command!`);
+            return `Client did not accept the last command!`;
         }
     });
 
     socket.on("close", () => {
         delete devices[socket.remoteAddress];
-        fastify.log.info(
+        fastifyInstance.log.info(
             `Connection closed: ${socket.remoteAddress}:${socket.remotePort}`
         );
     });
 
     socket.on("end", function () {
         delete devices[socket.remoteAddress];
-        fastify.log.info(`EOT: ${socket.remoteAddress}:${socket.remotePort}`);
+        fastifyInstance.log.info(
+            `EOT: ${socket.remoteAddress}:${socket.remotePort}`
+        );
     });
 
     socket.on("error", (err) => {
         delete devices[socket.remoteAddress];
-        fastify.log.error(err);
+        fastifyInstance.log.error(err);
     });
 
     socket.on("timeout", () => {
         delete devices[socket.remoteAddress];
-        fastify.log.info(
+        fastifyInstance.log.info(
             `Timeout: ${socket.remoteAddress}:${socket.remotePort}`
         );
     });
@@ -468,6 +610,8 @@ const opts = {
             type: "object",
             properties: {
                 status: { type: ["string", "number"] },
+                info: { type: ["string", "number"] },
+                id: { type: ["string", "number"] },
                 brightness: {
                     type: ["string", "number"],
                 },
@@ -479,6 +623,7 @@ const opts = {
                         g: { type: ["string", "number"] },
                         b: { type: ["string", "number"] },
                     },
+                    custom: { type: ["string", "number"] },
                 },
             },
         },
@@ -486,10 +631,10 @@ const opts = {
     },
 };
 
-fastify.post("/api/devices/:IP", opts, async (req, res) => {
+fastifyInstance.post("/api/devices/:IP", opts, async (req, res) => {
     try {
         let {
-            body: { brightness, color, status, temperature },
+            body: { brightness, temperature, color, status, id, info, custom },
             params: { IP },
         } = req;
 
@@ -500,13 +645,15 @@ fastify.post("/api/devices/:IP", opts, async (req, res) => {
             case "on":
             case 1:
             case "1":
-                await sendTCPData(sock, CMD_TURN_ON);
+                await sendTCPData(sock, CMD_TURN_ON(Number(id))); // Pass the id as an argument to CMD_TURN_ON
+                devices[IP].state.status = true; // Update device state for status
                 break;
 
             case "off":
             case 0:
             case "0":
-                await sendTCPData(sock, CMD_TURN_OFF);
+                await sendTCPData(sock, CMD_TURN_OFF(Number(id))); // Pass the id as an argument to CMD_TURN_OFF
+                devices[IP].state.status = false; // Update device state for status
                 break;
 
             default:
@@ -514,40 +661,66 @@ fastify.post("/api/devices/:IP", opts, async (req, res) => {
         }
 
         if (brightness) {
-            await sendTCPData(sock, CMD_SET_BRIGHTNESS(Number(brightness)));
+            await sendTCPData(
+                sock,
+                CMD_SET_BRIGHTNESS(Number(brightness), Number(id))
+            );
+            devices[IP].state.brightness = Number(brightness); // Update device state for brightness
         }
 
         if (temperature) {
             await sendTCPData(
                 sock,
-                CMD_SET_COLOR_TEMPERATURE(Number(temperature))
+                CMD_SET_TEMPERATURE(Number(temperature), Number(id))
             );
+            devices[IP].state.temperature = Number(temperature); // Update device state for temperature
         }
 
         if (color) {
+            fastifyInstance.log.info(
+                `Calling CMD_SET_COLOR with: r=${color.r}, g=${color.g}, b=${color.b}, id=${id}`
+            );
             await sendTCPData(
                 sock,
                 CMD_SET_COLOR(
                     Number(color.r),
                     Number(color.g),
-                    Number(color.b)
+                    Number(color.b),
+                    Number(id)
                 )
             );
+            devices[IP].state.color = {
+                r: Number(color.r),
+                g: Number(color.g),
+                b: Number(color.b),
+            }; // Update device state for color
+        }
+
+        if (info) {
+            await sendTCPData(sock, CMD_GET_INFO);
+        }
+
+        if (custom) {
+            await sendTCPData(sock, CMD_CUSTOM(custom));
         }
 
         return {
+            id,
             status,
             brightness,
             temperature,
             color,
+            info,
+            custom,
         };
     } catch (e) {
-        res.statusCode = 404;
-        return e;
+        fastifyInstance.log.error(e);
+        res.statusCode = 400;
+        return { error: e.message || "Unknown error" };
     }
 });
 
-fastify.get("/api/devices", async (req, res) => {
+fastifyInstance.get("/api/devices", async (req, res) => {
     try {
         return Object.keys(devices);
     } catch (e) {
@@ -556,26 +729,36 @@ fastify.get("/api/devices", async (req, res) => {
     }
 });
 
-fastify.get("/api/devices/:IP", { schema: { params } }, async (req, res) => {
-    try {
-        const {
-            params: { IP },
-        } = req;
-        if (!(IP in devices)) throw new Error("Not found");
+fastifyInstance.get(
+    "/api/devices/:IP",
+    { schema: { params } },
+    async (req, res) => {
+        try {
+            const {
+                params: { IP },
+            } = req;
+            if (!(IP in devices)) throw new Error("Not found");
 
-        return devices[IP].state;
-    } catch (e) {
-        res.statusCode = 404;
-        return e;
+            return {
+                ...devices[IP].state,
+                ...devices[IP].name,
+            };
+        } catch (e) {
+            res.statusCode = 404;
+            return e;
+        }
     }
-});
+);
 
-fastify.listen(API_PORT, API_HOST, (err) => {
+// Start the server
+fastifyInstance.listen(API_PORT, API_HOST, (err) => {
     if (err) {
-        fastify.log.error(err);
+        fastifyInstance.log.error(err);
         process.exit(1);
     }
     server.listen(TLS_PORT, TLS_HOST, function () {
-        fastify.log.info(`TLS server listening on ${TLS_HOST}:${TLS_PORT}`);
+        fastifyInstance.log.info(
+            `TLS server listening on ${TLS_HOST}:${TLS_PORT}`
+        );
     });
 });
