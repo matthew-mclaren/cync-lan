@@ -70,11 +70,19 @@ Other body options include:
 - brightness: set in between `0`-`100`
 - temperature: for non-RGB bulbs with color options you can set the color temp from `0` (candlelight) to `100` (sunlight)
 - color: for RGB bulbs you can set the R, G, B, and saturation (S) from `0`-`255`. `0` saturation is most saturated, and `255` is pure white (confusing, but it's how they set it up!)
+- ID (Required): This can be obtained by running the devices query below on a specific IP.
+
+```sh
+curl -X POST 'http://192.168.1.1:8080/api/devices/192.168.1.2' -H 'Content-Type: application/json' -d '{"brightness":"50", "id":"0"}'
+curl -X POST 'http://192.168.1.1:8080/api/devices/192.168.1.2' -H 'Content-Type: application/json' -d '{"temperature":"25", "id":"0"}'
+curl -X POST 'http://192.168.1.1:8080/api/devices/192.168.1.2' -H 'Content-Type: application/json' -d '{"color":{"r":255,"g":0,"b":250}, "id":"0"}'
+```
 
 An API route at `/api/devices` returns connected devices.
 
 ```sh
 curl http://192.168.1.1:8080/api/devices
+curl http://192.168.1.1:8080/api/devices/192.168.1.2
 ```
 
 ## Debugging:
