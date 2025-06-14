@@ -1,6 +1,6 @@
 # cync-lan
 
-Proof-of-concept LAN controller for CYNC devices.
+Proof-of-concept LAN controller for CYNC devices. This is a modified version of @iburistu great work. These changes are what worked for me and my specific RGB Cync lights.
 
 ## Prerequisites:
 
